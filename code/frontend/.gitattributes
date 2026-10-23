@@ -1,0 +1,2 @@
+# Keep LF everywhere so Docker (Linux) and teammates on any OS get identical files.
+* text=auto eol=lf
