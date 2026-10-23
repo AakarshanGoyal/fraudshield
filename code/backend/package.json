@@ -5,6 +5,9 @@
   "scripts": {
     "seed": "node scripts/seed.js",
     "reset": "node scripts/seed.js",
+    "batch": "node scripts/batch.js",
+    "compare": "node scripts/compare.js",
+    "test": "node --test tests/worked-examples.test.js",
     "dev": "nodemon src/server.js"
   },
   "keywords": [],
