@@ -34,6 +34,27 @@ sum of R7-R12 points (capped at 100). R10 uses the config `high_risk_mcc` list
 ['4829', '5967', '6051', '7995']. Note: `BLACKLISTED` does not occur in the labelled file, so
 the hard-100 branch fires only on the velocity condition here.
 
+## AI-4 - Second detector (Isolation Forest vs XGBoost vs baseline)
+
+Isolation Forest is unsupervised (labels used only for evaluation here), trained on
+the same out-of-time split. Its anomaly score is normalised to [0,1] for the alert
+screen. XGBoost remains the decision model; the Isolation Forest is a cross-check.
+
+| Detector | ROC-AUC | PR-AUC (primary) |
+|---|---:|---:|
+| Baseline (rules) | 0.7155 | 0.1329 |
+| **XGBoost (chosen)** | **0.9186** | **0.6474** |
+| Isolation Forest | 0.8738 | 0.1119 |
+
+AI-4 target (Isolation Forest ROC-AUC above the baseline ROC-AUC):
+**PASS** (0.8738 vs 0.7155).
+
+Why XGBoost is the decision model: the Isolation Forest ranks anomalies reasonably
+(ROC-AUC 0.874) but its **PR-AUC is 0.1119** - below even the rules
+baseline and far below XGBoost's 0.6474. For rare fraud, PR-AUC is the
+metric that matters, so the supervised model is the right choice; the Isolation Forest
+is shown alongside as an independent second opinion.
+
 ## Model
 
 XGBoost, 170 trees, `scale_pos_weight` 82.3

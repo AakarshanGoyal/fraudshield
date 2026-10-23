@@ -18,7 +18,7 @@ import shap
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from common import FEATURES, CATEGORICAL, NUMERIC
+from common import FEATURES, CATEGORICAL, NUMERIC, align_categories
 from explain import phrase
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -33,6 +33,18 @@ booster = xgb.Booster()
 booster.load_model(os.path.join(MODEL_DIR, "model.json"))
 booster.set_param({"device": "cpu"})
 explainer = shap.TreeExplainer(booster)
+
+# AI-4 second detector (optional). If the Isolation Forest is present, its
+# normalised anomaly score is returned alongside the XGBoost fraud_score for the
+# alert screen. XGBoost stays the decision model; iso_score is display-only.
+ISO = ISO_META = None
+ISO_GATE = 0.30     # only score the IF for rows this risky or above (alert-worthy)
+try:
+    import joblib
+    ISO = joblib.load(os.path.join(MODEL_DIR, "iso_model.pkl"))
+    ISO_META = json.load(open(os.path.join(MODEL_DIR, "iso_meta.json")))
+except Exception as e:
+    print(f"[ml] isolation forest not loaded (iso_score disabled): {e}")
 
 app = FastAPI(title="FraudShield ML", version=MODEL_VERSION)
 
@@ -100,12 +112,26 @@ def score(req: ScoreRequest):
     top_features = [FEATURES[i] for i in chosen]
     top_factors = [phrase(FEATURES[i], raw[FEATURES[i]]) for i in chosen]
 
-    return {
+    out = {
         "fraud_score": round(fraud_score, 4),
         "top_factors": top_factors,
         "top_features": top_features,
         "model_version": MODEL_VERSION,
     }
+    # AI-4: second-detector score for the alert screen (display-only).
+    # Computed lazily - only for elevated-risk rows (those that can reach an
+    # analyst), so the ~90% benign fast path keeps its ~40 ms latency. Benign
+    # rows return iso_score = null (they never create an alert to show it on).
+    out["iso_score"] = None
+    if ISO is not None and fraud_score >= ISO_GATE:
+        Xi = align_categories(X.copy(), CATEGORIES)
+        for c in CATEGORICAL:
+            Xi[c] = Xi[c].cat.codes
+        Xi = Xi[FEATURES].astype(float).fillna(0.0)
+        raw_iso = float(-ISO.score_samples(Xi)[0])
+        lo, hi = ISO_META["norm_lo"], ISO_META["norm_hi"]
+        out["iso_score"] = round(min(max((raw_iso - lo) / (hi - lo + 1e-9), 0.0), 1.0), 4)
+    return out
 
 
 # Warm up at import: run one full predict + SHAP pass so the first real request is

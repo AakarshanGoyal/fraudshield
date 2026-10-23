@@ -13,13 +13,25 @@ code/ml/
 ├── serve.py        FastAPI /health + /score            <- the runtime service
 ├── explain.py      SHAP feature -> plain-English phrase
 ├── report.py       writes /output/evaluation_report.md + model_card.md
+├── iso_forest.py   AI-4 second detector: trains + evaluates the Isolation Forest
 ├── tune.py         hyperparameter sweep (evidence; not used in production)
 ├── sanity.py       data checks
 ├── latency.py      p95 latency + parity check against real rows
 ├── requirements.txt
 ├── Dockerfile
-└── model/          model.json, features.json, meta.json  (committed, trained)
+└── model/          model.json, features.json, meta.json,
+                    iso_model.pkl, iso_meta.json  (committed, trained)
 ```
+
+## AI-4 - second detector (Isolation Forest)
+
+`iso_forest.py` trains an unsupervised Isolation Forest on the same split (labels
+used only for evaluation). Test ROC-AUC ~0.86, above the rules baseline (0.72) but
+its PR-AUC is far below XGBoost's, which is why XGBoost stays the decision model -
+the comparison is in `evaluation_report.md`. `/score` returns an extra `iso_score`
+(normalised 0-1) for the alert screen, computed only for elevated-risk rows
+(`fraud_score >= 0.30`) so the benign fast path keeps its ~40 ms latency; benign
+rows return `iso_score: null`. XGBoost alone drives the AI-2 decision.
 
 Data lives at the repo root `data/`. Scripts take the data dir as an argument.
 
