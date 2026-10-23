@@ -5,6 +5,7 @@
   "scripts": {
     "start": "node src/server.js",
     "docs": "node scripts/export-openapi.js",
+    "replay": "node scripts/replay.js",
     "smoke": "node scripts/smoke.js",
     "seed": "node scripts/seed.js",
     "reset": "node scripts/seed.js",
