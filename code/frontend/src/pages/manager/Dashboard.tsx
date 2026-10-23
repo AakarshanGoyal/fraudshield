@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { errorMessage } from '../../api/client';
 import { getDashboard } from '../../api/endpoints';
+import { useConfig } from '../../api/useConfig';
 import { Card, CardHeader, ErrorBanner, PageHeader, Spinner, cx, inputClass } from '../../components/ui';
 import { formatPct, nowIstIso, reasonLabel } from '../../lib/format';
 
@@ -18,6 +19,7 @@ export default function Dashboard() {
   const [to, setTo] = useState(today);
   const [auto, setAuto] = useState(true);
   const invalid = from > to;
+  const sla = useConfig().get<Record<'HIGH' | 'MEDIUM', number>>('sla_minutes');
 
   const q = useQuery({
     queryKey: ['dashboard', from, to],
@@ -121,7 +123,10 @@ export default function Dashboard() {
             <div className="grid grid-cols-2 divide-x divide-slate-100">
               {(['HIGH', 'MEDIUM'] as const).map((p) => (
                 <div key={p} className="p-5">
-                  <p className="text-xs text-slate-500">{p} <span className="text-slate-400">· SLA {p === 'HIGH' ? '30 min' : '4 h'}</span></p>
+                  <p className="text-xs text-slate-500">
+                    {p}
+                    {sla?.[p] != null && <span className="text-slate-400"> · SLA {formatMinutes(sla[p])}</span>}
+                  </p>
                   <p className={cx('tabular mt-1 text-3xl font-semibold', p === 'HIGH' ? 'text-red-600' : 'text-amber-600')}>{d.open_alerts_by_priority[p]}</p>
                   <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100">
                     <div className={cx('h-full rounded-full', p === 'HIGH' ? 'bg-red-500' : 'bg-amber-500')} style={{ width: `${openTotal ? (d.open_alerts_by_priority[p] / openTotal) * 100 : 0}%` }} />
@@ -135,6 +140,8 @@ export default function Dashboard() {
     </div>
   );
 }
+
+const formatMinutes = (m: number) => (m % 60 === 0 && m >= 60 ? `${m / 60} h` : `${m} min`);
 
 function Kpi({ label, value, tone = 'text-slate-900', hint }: { label: string; value: string; tone?: string; hint?: string }) {
   return (

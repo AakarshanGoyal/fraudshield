@@ -304,7 +304,7 @@ export const handlers = [
     if (a.status !== 'IN_REVIEW') return err(409, 'CONFLICT', 'This alert was already changed by someone else.');
     if (a.claimed_by !== u.username) return err(403, 'FORBIDDEN', 'Only the analyst who claimed this alert can close it.');
     const t = db.txns.find((x) => x.txn_id === a.txn_id)!;
-    const limit = db.config.find((c) => c.key === 'maker_checker_limit')!.value as number;
+    const limit = db.config.find((c) => c.key === 'false_positive_manager_limit')!.value as number;
     const from = a.status;
     a.comment = b.comment!.trim();
     if (b.outcome === 'CONFIRMED_FRAUD') {

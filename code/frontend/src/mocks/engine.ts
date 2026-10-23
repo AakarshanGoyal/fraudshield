@@ -17,7 +17,7 @@ function haversineKm(a: string, b: string) {
   const dLat = rad(q.lat - p.lat);
   const dLon = rad(q.lon - p.lon);
   const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(p.lat)) * Math.cos(rad(q.lat)) * Math.sin(dLon / 2) ** 2;
-  return 2 * 6371 * Math.asin(Math.sqrt(h));
+  return 2 * cfg<number>('earth_radius_km') * Math.asin(Math.sqrt(h));
 }
 
 const FRAUD_CODES = new Set([
@@ -30,7 +30,7 @@ const PHYSICAL = new Set(['POS', 'ATM', 'CONTACTLESS']);
 export function createAlertIfNeeded(t: MockTxn, actor = 'system') {
   if (t.alert_id != null || !t.reason_codes.some((c) => FRAUD_CODES.has(c))) return null;
   const priority: Priority =
-    t.amount >= cfg<number>('high_priority_min_amount') ||
+    t.amount >= cfg<number>('alert_high_amount') ||
     t.reason_codes.some((c) => HIGH_CODES.has(c)) ||
     (t.fraud_score ?? 0) >= cfg<number>('ai_block_threshold')
       ? 'HIGH'
@@ -81,12 +81,12 @@ export function decide(req: Required<SimulateRequest>): MockTxn {
 
   const velocity = prior.filter((t) => ms(req.txn_ts) - ms(t.txn_ts) <= cfg<number>('velocity_window_minutes') * 60_000).length;
   const approvedToday = approved.filter((t) => istDate(t.txn_ts) === istDate(req.txn_ts)).reduce((s, t) => s + t.amount, 0);
-  const last30 = approved.filter((t) => ms(req.txn_ts) - ms(t.txn_ts) <= 30 * 86_400_000);
+  const last30 = approved.filter((t) => ms(req.txn_ts) - ms(t.txn_ts) <= cfg<number>('avg_lookback_days') * 86_400_000);
   const avg30 = last30.length ? last30.reduce((s, t) => s + t.amount, 0) / last30.length : null;
   let speed: number | null = null;
   if (PHYSICAL.has(req.channel)) {
     const lastPhys = approved
-      .filter((t) => PHYSICAL.has(t.channel) && ms(req.txn_ts) - ms(t.txn_ts) <= cfg<number>('impossible_travel_lookback_hours') * 3_600_000)
+      .filter((t) => PHYSICAL.has(t.channel) && ms(req.txn_ts) - ms(t.txn_ts) <= cfg<number>('travel_lookback_hours') * 3_600_000)
       .sort((a, b) => ms(b.txn_ts) - ms(a.txn_ts))[0];
     if (lastPhys) {
       const km = haversineKm(lastPhys.txn_city, req.txn_city);
@@ -122,7 +122,7 @@ export function decide(req: Required<SimulateRequest>): MockTxn {
       if (velocity >= cfg<number>('velocity_stepup_min') && velocity <= cfg<number>('velocity_stepup_max')) soft.push('HIGH_VELOCITY');
       if (
         (avg30 != null && req.amount > cfg<number>('amount_spike_multiplier') * avg30 && req.amount >= cfg<number>('amount_spike_min_amount')) ||
-        (avg30 == null && req.amount >= cfg<number>('amount_no_history_min_amount'))
+        (avg30 == null && req.amount >= cfg<number>('amount_spike_no_history_amount'))
       )
         soft.push('AMOUNT_SPIKE');
       if (req.txn_country !== card.home_country && HIGH_RISK_COUNTRIES.has(req.txn_country)) soft.push('HIGH_RISK_GEO');
@@ -157,7 +157,7 @@ export function decide(req: Required<SimulateRequest>): MockTxn {
   };
   if (decision === 'STEP_UP') {
     t.otp = String(Math.floor(100000 + Math.random() * 900000));
-    t.expires_at = nowIstIso(new Date(Date.now() + cfg<number>('stepup_expiry_minutes') * 60_000));
+    t.expires_at = nowIstIso(new Date(Date.now() + cfg<number>('step_up_expiry_minutes') * 60_000));
     // The real backend prints the OTP in its console; the mock prints it in the browser console.
     console.info(`%c[mock backend] OTP for ${t.txn_id}: ${t.otp}`, 'color:#4338ca;font-weight:bold');
   }

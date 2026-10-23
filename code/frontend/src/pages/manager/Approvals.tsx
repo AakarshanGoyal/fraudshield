@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { errorMessage } from '../../api/client';
 import { getAlert, getAlerts } from '../../api/endpoints';
+import { useConfig } from '../../api/useConfig';
 import { FraudScore, PriorityBadge, ReasonChips } from '../../components/badges';
 import { SlaTimer } from '../../components/SlaTimer';
 import { Card, EmptyState, ErrorBanner, PageHeader, Spinner, cx } from '../../components/ui';
@@ -17,12 +18,13 @@ export default function Approvals() {
     refetchInterval: 5000,
   });
   const [openId, setOpenId] = useState<number | null>(null);
+  const limit = useConfig().get<number>('false_positive_manager_limit');
 
   return (
     <div>
       <PageHeader
         title="Pending approvals"
-        subtitle="False-positive releases above ₹1,00,000 need a second person. You cannot check a proposal you made."
+        subtitle={`False-positive releases above ${limit != null ? formatINR(limit) : 'the manager approval limit'} need a second person. You cannot check a proposal you made.`}
       />
       {q.isLoading ? (
         <Spinner />

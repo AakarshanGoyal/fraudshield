@@ -18,7 +18,8 @@ import { Button, Card, CardHeader, ErrorBanner, Field, KeyValue, Spinner, cx, in
 import { formatDateTime, formatINR } from '../../lib/format';
 import { DecisionPanel } from '../manager/DecisionPanel';
 
-const MAKER_CHECKER_LIMIT = 100000; // shown as a hint only; the backend decides
+// Rule thresholds live in the config table, which only managers can read, so this page
+// never repeats a threshold: it shows what the server decided (status, reason codes).
 
 export default function AlertDetailPage() {
   const { alertId = '' } = useParams();
@@ -126,7 +127,7 @@ function ActionPanel({ d }: { d: AlertDetail }) {
       <Card className="border-orange-200">
         <CardHeader
           title="Waiting for manager approval"
-          subtitle={`${a.proposed_by ?? 'An analyst'} proposed FALSE_POSITIVE on a payment above ${formatINR(MAKER_CHECKER_LIMIT)}. A different manager must check it.`}
+          subtitle={`${a.proposed_by ?? 'An analyst'} proposed FALSE_POSITIVE on a payment above the manager approval limit. A different manager must check it.`}
         />
         <div className="space-y-4 p-5">
           {a.comment && <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700">Analyst comment: “{a.comment}”</p>}
@@ -168,7 +169,6 @@ function ClosePanel({ d, onDone }: { d: AlertDetail; onDone: () => void }) {
   const [comment, setComment] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [banner, setBanner] = useState<string | null>(null);
-  const needsManager = outcome === 'FALSE_POSITIVE' && d.transaction.amount > MAKER_CHECKER_LIMIT;
 
   const m = useMutation({
     mutationFn: () => closeAlert(d.alert.alert_id, outcome!, comment.trim()),
@@ -176,7 +176,7 @@ function ClosePanel({ d, onDone }: { d: AlertDetail; onDone: () => void }) {
       toast(
         'success',
         res.status === 'PENDING_MANAGER_APPROVAL'
-          ? 'Sent to a manager for approval (amount above ₹1,00,000).'
+          ? 'The amount is above the manager approval limit, so this was sent to a manager for approval.'
           : res.status === 'CONFIRMED_FRAUD'
             ? 'Closed as confirmed fraud. The card is now blocked.'
             : 'Closed as false positive.',
@@ -223,9 +223,9 @@ function ClosePanel({ d, onDone }: { d: AlertDetail; onDone: () => void }) {
           {option('FALSE_POSITIVE', 'False positive', 'Genuine payment by the cardholder. Release the alert.', 'border-emerald-500 bg-emerald-50')}
         </div>
         {errors.outcome && <p className="text-xs text-red-600">{errors.outcome}</p>}
-        {needsManager && (
+        {outcome === 'FALSE_POSITIVE' && (
           <p className="rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-xs text-orange-800">
-            This payment is {formatINR(d.transaction.amount)}, above {formatINR(MAKER_CHECKER_LIMIT)}. A false positive here goes to a manager for approval first.
+            If {formatINR(d.transaction.amount)} is above the manager approval limit, this release goes to a manager first (maker-checker).
           </p>
         )}
         <Field label="Comment" error={errors.comment} hint={`${comment.trim().length}/10 characters minimum`}>
@@ -239,7 +239,7 @@ function ClosePanel({ d, onDone }: { d: AlertDetail; onDone: () => void }) {
         </Field>
         <div className="flex justify-end">
           <Button loading={m.isPending} onClick={submit} variant={outcome === 'CONFIRMED_FRAUD' ? 'danger' : 'primary'}>
-            {needsManager ? 'Send to manager' : 'Close alert'}
+            Close alert
           </Button>
         </div>
       </div>
@@ -283,12 +283,14 @@ function TransactionCard({ d }: { d: AlertDetail }) {
 
 function FeaturesCard({ d }: { d: AlertDetail }) {
   const f = d.features;
+  // A value is highlighted when the rule that uses it actually triggered on the server.
+  const hit = (...codes: string[]) => codes.some((c) => d.transaction.reason_codes.includes(c));
   const items: { label: string; value: string; flag?: boolean; note: string }[] = [
-    { label: 'Velocity (10 min)', value: f.velocity_10m == null ? '—' : String(f.velocity_10m), flag: (f.velocity_10m ?? 0) >= 3, note: 'Prior transactions in the 10 minutes before' },
-    { label: 'Approved today', value: formatINR(f.approved_today), flag: f.approved_today != null && f.approved_today + d.transaction.amount > d.card.daily_limit, note: `Daily limit ${formatINR(d.card.daily_limit)}` },
-    { label: '30-day average', value: formatINR(f.avg_amount_30d), flag: f.avg_amount_30d != null && d.transaction.amount > 5 * f.avg_amount_30d, note: f.avg_amount_30d ? `This payment is ${(d.transaction.amount / f.avg_amount_30d).toFixed(1)}× the average` : 'No 30-day history' },
-    { label: 'Travel speed', value: f.speed_kmph == null ? '—' : `${f.speed_kmph.toFixed(2)} km/h`, flag: (f.speed_kmph ?? 0) > 800, note: 'Since the last in-person payment (6 h)' },
-    { label: 'New merchant', value: f.new_merchant == null ? '—' : f.new_merchant ? 'Yes' : 'No', flag: !!f.new_merchant, note: 'No payment here in 90 days' },
+    { label: 'Velocity (10 min)', value: f.velocity_10m == null ? '—' : String(f.velocity_10m), flag: hit('VELOCITY_BURST', 'HIGH_VELOCITY'), note: 'Prior transactions in the velocity window' },
+    { label: 'Approved today', value: formatINR(f.approved_today), flag: hit('DAILY_LIMIT_EXCEEDED'), note: `Daily limit ${formatINR(d.card.daily_limit)}` },
+    { label: '30-day average', value: formatINR(f.avg_amount_30d), flag: hit('AMOUNT_SPIKE'), note: f.avg_amount_30d ? `This payment is ${(d.transaction.amount / f.avg_amount_30d).toFixed(1)}× the average` : 'No 30-day history' },
+    { label: 'Travel speed', value: f.speed_kmph == null ? '—' : `${f.speed_kmph.toFixed(2)} km/h`, flag: hit('IMPOSSIBLE_TRAVEL'), note: 'Since the last in-person payment' },
+    { label: 'New merchant', value: f.new_merchant == null ? '—' : f.new_merchant ? 'Yes' : 'No', flag: hit('NEW_MERCHANT_HIGH_VALUE'), note: 'No earlier payment at this merchant in the look-back period' },
   ];
   return (
     <Card>
@@ -354,7 +356,9 @@ function AiCard({ d }: { d: AlertDetail }) {
               <p className={cx('tabular text-4xl font-semibold tracking-tight', ai.fraud_score! >= 0.9 ? 'text-red-600' : ai.fraud_score! >= 0.7 ? 'text-amber-600' : 'text-emerald-600')}>
                 {(ai.fraud_score! * 100).toFixed(2)}%
               </p>
-              <span className="pb-1 text-xs text-slate-500">step-up ≥ 70% · block ≥ 90%</span>
+              {d.transaction.reason_codes.includes('HIGH_FRAUD_SCORE_MODEL') && (
+                <span className="pb-1 text-xs font-medium text-red-600">Raised the decision</span>
+              )}
             </div>
             <FraudScore score={ai.fraud_score} />
             {ai.top_factors.length > 0 && (

@@ -5,7 +5,9 @@ import type { ConfigValue } from '../api/types';
 
 export const READ_ONLY_KEYS = new Set(['version']);
 
-const isCountLike = (key: string) => /(count|minutes|hours|days|_hour|start|end|_min$|_max$)/.test(key);
+// Key patterns match data/case_01_rules_config_V1.0.json.
+const isCountLike = (key: string) => /(count|minutes|hours|days|_hour_|_min$|_max$|_ms$)/.test(key);
+const mustBePositive = (key: string) => /(count|minutes|hours|days|_ms|_kmph|_multiplier|earth_radius_km)$/.test(key);
 const isThreshold = (key: string) => /threshold/.test(key);
 
 export function validateConfig(key: string, next: ConfigValue, current: ConfigValue, all: Record<string, ConfigValue>): string | null {
@@ -14,6 +16,7 @@ export function validateConfig(key: string, next: ConfigValue, current: ConfigVa
   if (typeof current === 'number') {
     if (typeof next !== 'number' || !Number.isFinite(next)) return 'Enter a number.';
     if (next < 0) return 'Must be zero or more.';
+    if (mustBePositive(key) && next === 0) return 'Must be greater than zero.';
     if (isThreshold(key) && next > 1) return 'Thresholds are between 0 and 1 (e.g. 0.70).';
     if (isCountLike(key) && !Number.isInteger(next)) return 'Must be a whole number.';
     if (/odd_hour_(start|end)/.test(key) && next > 23) return 'Hours are 0 to 23.';

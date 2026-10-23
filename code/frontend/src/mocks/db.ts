@@ -107,6 +107,36 @@ export const CITIES: Record<string, { country: string; lat: number; lon: number 
 };
 export const HIGH_RISK_COUNTRIES = new Set(['XA', 'XB', 'XC']);
 
+export const RULES_CONFIG = {
+  version: '1.0',
+  velocity_window_minutes: 10,
+  velocity_burst_count: 5,
+  velocity_stepup_min: 3,
+  velocity_stepup_max: 4,
+  avg_lookback_days: 30,
+  amount_spike_multiplier: 5,
+  amount_spike_min_amount: 10000,
+  amount_spike_no_history_amount: 50000,
+  impossible_travel_kmph: 800,
+  travel_lookback_hours: 6,
+  earth_radius_km: 6371.0,
+  odd_hour_start: 0,
+  odd_hour_end: 4,
+  odd_hour_min_amount: 20000,
+  new_merchant_lookback_days: 90,
+  new_merchant_min_amount: 25000,
+  high_risk_mcc: ['4829', '5967', '6051', '7995'],
+  multiple_red_flags_count: 3,
+  points: { HIGH_VELOCITY: 25, AMOUNT_SPIKE: 30, HIGH_RISK_GEO: 25, HIGH_RISK_MCC: 15, ODD_HOUR_HIGH_VALUE: 15, NEW_MERCHANT_HIGH_VALUE: 20 },
+  step_up_expiry_minutes: 15,
+  false_positive_manager_limit: 100000,
+  alert_high_amount: 50000,
+  sla_minutes: { HIGH: 30, MEDIUM: 240 },
+  ai_step_up_threshold: 0.7,
+  ai_block_threshold: 0.9,
+  model_timeout_ms: 150,
+};
+
 const ago = (minutes: number) => nowIstIso(new Date(Date.now() - minutes * 60_000));
 const ahead = (minutes: number) => nowIstIso(new Date(Date.now() + minutes * 60_000));
 
@@ -271,34 +301,11 @@ function seed() {
     { alert_id: 21, txn_id: 'T200000045', priority: 'MEDIUM', status: 'FALSE_POSITIVE', created_at: '2026-03-04T16:55:00+05:30', sla_due_at: '2026-03-04T20:55:00+05:30', claimed_by: 'analyst2', proposed_by: null, comment: 'Customer was at a restaurant with friends, genuine.' },
   ];
 
-  const config: { key: string; value: ConfigValue; updated_at: string }[] = (
-    [
-      ['version', '1.0'],
-      ['velocity_window_minutes', 10],
-      ['velocity_burst_count', 5],
-      ['velocity_stepup_min', 3],
-      ['velocity_stepup_max', 4],
-      ['amount_spike_multiplier', 5],
-      ['amount_spike_min_amount', 10000],
-      ['amount_no_history_min_amount', 50000],
-      ['impossible_travel_kmph', 800],
-      ['impossible_travel_lookback_hours', 6],
-      ['odd_hour_start', 0],
-      ['odd_hour_end', 4],
-      ['odd_hour_min_amount', 20000],
-      ['new_merchant_min_amount', 25000],
-      ['new_merchant_lookback_days', 90],
-      ['high_risk_mcc', ['4829', '5967', '6051', '7995']],
-      ['multiple_red_flags_count', 3],
-      ['points', { HIGH_VELOCITY: 25, AMOUNT_SPIKE: 30, HIGH_RISK_GEO: 25, HIGH_RISK_MCC: 15, ODD_HOUR_HIGH_VALUE: 15, NEW_MERCHANT_HIGH_VALUE: 20 }],
-      ['sla_minutes', { HIGH: 30, MEDIUM: 240 }],
-      ['high_priority_min_amount', 50000],
-      ['stepup_expiry_minutes', 15],
-      ['maker_checker_limit', 100000],
-      ['ai_step_up_threshold', 0.7],
-      ['ai_block_threshold', 0.9],
-    ] as [string, ConfigValue][]
-  ).map(([key, value]) => ({ key, value, updated_at: '2026-03-04T09:00:00+05:30' }));
+  // Same keys, values and order as data/case_01_rules_config_V1.0.json (copied, because the
+  // Docker build context is code/frontend and can't read ../../data).
+  const config: { key: string; value: ConfigValue; updated_at: string }[] = Object.entries(RULES_CONFIG).map(
+    ([key, value]) => ({ key, value: structuredClone(value) as ConfigValue, updated_at: '2026-03-04T09:00:00+05:30' }),
+  );
 
   const audit: MockAudit[] = [];
   return { users, cards, merchants, txns, alerts, config, audit, nextAlertId: 22, nextAuditId: 100 };
