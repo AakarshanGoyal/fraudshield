@@ -61,14 +61,14 @@ graph TD
 | **Backend Core** | Node.js (v20+) & Express 5 | High asynchronous I/O efficiency for concurrent transaction processing; predictable event-loop latency. |
 | **Database & ORM** | PostgreSQL 16 & Prisma 6 | ACID transactional integrity; exact `Decimal(12,2)` precision for financial amounts; conditional updates and row-level locking (`FOR UPDATE`). |
 | **ML Inference Service** | Python 3.12 & FastAPI + Uvicorn | Ultra-low latency ASGI interface; native C++ bindings for XGBoost 3.4.1 and fast vectorized TreeSHAP calculations. |
-| **Frontend Application** | React 18, Vite 6, TailwindCSS 4 | Instant sub-second hot reload; modern responsive component library; TanStack Query for 5s automatic polling of queues and SLA timers. |
+| **Frontend Application** | React 18 (`^18.3.1`), Vite 6 (`^6.0.3`), TailwindCSS 4 (`^4.0.0`) | Instant sub-second hot reload; modern responsive component library; TanStack Query for 5s automatic polling of queues and SLA timers. |
 | **Containerization** | Docker & Docker Compose | Single-command deployment reproducible across environments; isolated networking and healthchecks. |
 
 ---
 
 ## 3. Assumptions & Compliance Standards
 
-1. **PCI-DSS Compliance (Masked Card Data):**
+1. **PCI-DSS-Style Card Data Handling (Salted Hash + Last 4 Only):**
    - Full 16-digit Primary Account Numbers (PAN) are **never** stored, logged, transmitted, or displayed.
    - The database stores a salted SHA-256 hash (`card_hash`) and the unmasked `last4` digits.
    - All customer-facing and analyst-facing UIs display card numbers masked as `•••• 1234` or `XXXXXXXXXXXX1234`.
@@ -85,7 +85,7 @@ graph TD
 
 ## 4. Database Schema & Entity-Relationship Diagram (ERD)
 
-The data model is implemented in PostgreSQL via Prisma (`code/backend/prisma/schema.prisma`). Real database foreign keys enforce integrity, while reference dimensions (merchants, cities, MCCs) are validated in application logic.
+The database comprises 12 tables: `Customer`, `Card`, `Merchant`, `MccCode`, `City`, `CountryRisk`, `RuleConfig`, `Transaction`, `StepUp`, `Alert`, `User`, and `AuditLog`. The data model is implemented in PostgreSQL via Prisma (`code/backend/prisma/schema.prisma`). Real database foreign keys enforce integrity, while reference dimensions (merchants, cities, MCCs, country risk) are checked in application logic.
 
 ```mermaid
 erDiagram
@@ -327,13 +327,13 @@ stateDiagram-v2
    - All transactions for a given card are serialized, ensuring velocity counters and daily limits are strictly accurate.
 2. **Idempotency Guarantee:**
    - Resending a request with an existing `txn_id` returns the previously computed authorization decision without creating duplicate transactions, step-ups, alerts, or audit records.
-3. **Optimistic Locking for Alerts:**
-   - Every `Alert` row includes a `version` counter and updates require matching status:
+3. **Alert Concurrency via Conditional Status Updates:**
+   - Every status change uses a conditional SQL update (`WHERE status = expected`), so two users acting simultaneously cannot both succeed; the second receives `HTTP 409 Conflict`.
+   - The `version` column is incremented on every change to count modifications:
      ```sql
      UPDATE "Alert" SET status = 'IN_REVIEW', claimed_by = $1, version = version + 1
      WHERE alert_id = $2 AND status = 'OPEN';
      ```
-   - If two analysts simultaneously claim or act on the same alert, the second request fails with `HTTP 409 Conflict`.
 
 ---
 
