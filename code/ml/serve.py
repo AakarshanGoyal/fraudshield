@@ -106,3 +106,23 @@ def score(req: ScoreRequest):
         "top_features": top_features,
         "model_version": MODEL_VERSION,
     }
+
+
+# Warm up at import: run one full predict + SHAP pass so the first real request is
+# fast, and so a self-restart comes back already hot. A failure here must not stop
+# the service starting - it would just mean a slightly slower first request.
+def _warmup():
+    try:
+        dummy = ScoreRequest(
+            card_type="DEBIT", channel="POS", mcc="5411", mcc_category="GROCERY",
+            merchant_risk="LOW", amount=1000.0, local_hour=12, is_international=0,
+            country_risk_high=0, distance_from_home_km=1.0, velocity_10m=0,
+            velocity_24h=1, amount_to_avg30_ratio=1.0, new_merchant_flag=0,
+            card_age_days=500,
+        )
+        score(dummy)
+    except Exception as e:  # never block startup on warmup
+        print(f"[ml] warmup skipped: {e}")
+
+
+_warmup()
