@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: fraudshield-db
+    environment:
+      POSTGRES_USER: fraud
+      POSTGRES_PASSWORD: fraud
+      POSTGRES_DB: fraudshield
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    container_name: fraudshield-redis
+    ports:
+      - "6379:6379"
+
+volumes:
+  pgdata:

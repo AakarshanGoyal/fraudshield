@@ -1,0 +1,166 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- Reference data (loaded from CSVs) ----------
+
+model Customer {
+  customer_id String  @id
+  full_name   String
+  mobile      String
+  email       String
+  city        String
+  username    String  @unique
+  cards       Card[]
+  user        User?
+}
+
+model Card {
+  card_id               String    @id
+  customer_id           String
+  card_hash             String
+  last4                 String
+  card_type             String
+  card_status           String
+  issue_date            DateTime  @db.Date
+  expiry_date           DateTime  @db.Date
+  home_city             String
+  home_country          String
+  daily_limit           Decimal   @db.Decimal(12, 2)
+  international_enabled Boolean
+  customer              Customer  @relation(fields: [customer_id], references: [customer_id])
+  transactions          Transaction[]
+}
+
+model Merchant {
+  merchant_id     String @id
+  merchant_name   String
+  mcc             String
+  mcc_description String
+  city            String
+  country         String
+  merchant_risk   String
+}
+
+model MccCode {
+  mcc             String  @id
+  mcc_description String
+  mcc_category    String
+  high_risk       Boolean
+}
+
+model City {
+  city      String @id
+  country   String
+  lat       Float
+  lon       Float
+  city_tier String
+}
+
+model CountryRisk {
+  country_code String @id
+  country_name String
+  risk_level   String
+}
+
+model RuleConfig {
+  key        String   @id
+  value      Json
+  updated_at DateTime @updatedAt
+}
+
+// ---------- Transactions ----------
+
+model Transaction {
+  txn_id          String    @id
+  card_id         String
+  txn_ts          DateTime  @db.Timestamptz
+  amount          Decimal   @db.Decimal(12, 2)
+  currency        String    @default("INR")
+  merchant_id     String
+  mcc             String
+  channel         String
+  txn_city        String
+  txn_country     String
+  status          String
+  source          String    @default("LIVE")
+
+  decision        String?
+  final_decision  String?
+  reason_codes    String[]
+  rule_risk_score Int?
+  velocity_10m    Int?
+  avg_amount_30d  Decimal?  @db.Decimal(12, 2)
+  speed_kmph      Float?
+  fraud_score     Float?
+  top_factors     Json?
+  model_status    String?
+  model_version   String?
+  processed_at    DateTime?
+
+  card            Card      @relation(fields: [card_id], references: [card_id])
+  step_up         StepUp?
+  alert           Alert?
+
+  @@index([card_id, txn_ts])
+}
+
+model StepUp {
+  id           Int       @id @default(autoincrement())
+  txn_id       String    @unique
+  otp_hash     String
+  expires_at   DateTime
+  status       String
+  responded_at DateTime?
+  transaction  Transaction @relation(fields: [txn_id], references: [txn_id])
+}
+
+model Alert {
+  alert_id    Int       @id @default(autoincrement())
+  txn_id      String    @unique
+  priority    String
+  status      String
+  sla_due_at  DateTime
+  created_at  DateTime
+  claimed_by  String?
+  proposed_by String?
+  closed_by   String?
+  comment     String?
+  version     Int       @default(0)
+  transaction Transaction @relation(fields: [txn_id], references: [txn_id])
+
+  @@index([status, priority, sla_due_at])
+}
+
+// ---------- Users and audit ----------
+
+model User {
+  user_id       String    @id
+  username      String    @unique
+  password_hash String
+  role          String
+  customer_id   String?   @unique
+  customer      Customer? @relation(fields: [customer_id], references: [customer_id])
+}
+
+model AuditLog {
+  id          BigInt   @id @default(autoincrement())
+  entity      String
+  entity_id   String
+  actor       String
+  role        String
+  ts          DateTime @default(now())
+  action      String
+  from_status String?
+  to_status   String?
+  comment     String?
+  before      Json?
+  after       Json?
+
+  @@index([entity, entity_id, ts])
+}
