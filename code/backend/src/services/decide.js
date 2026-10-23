@@ -111,7 +111,7 @@ async function decide(body, actor) {
             approved_today: features.approved_today_paise / 100, avg_amount_30d: features.avg_amount_30d,
             speed_kmph: features.speed_kmph, new_merchant: features.new_merchant,
           },
-          model_input: mlInput, fraud_score: ml.fraud_score, top_factors: ml.top_factors,
+          model_input: mlInput, fraud_score: ml.fraud_score, top_factors: ml.top_factors, top_features: ml.top_features,
           model_status: ml.model_status, model_version: ml.model_version, config_version: cfg.version,
         },
       });

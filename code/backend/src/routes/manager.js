@@ -92,6 +92,51 @@ config.get('/', ah(async (req, res) => {
 }));
 
 const kind = (v) => (Array.isArray(v) ? 'array' : v === null ? 'null' : typeof v);
+const article = (k) => (/^[aeiou]/.test(k) ? 'an' : 'a');
+
+const INTEGER_KEYS = new Set([
+  'velocity_window_minutes', 'velocity_burst_count', 'velocity_stepup_min', 'velocity_stepup_max', 'avg_lookback_days',
+  'travel_lookback_hours', 'new_merchant_lookback_days', 'multiple_red_flags_count', 'step_up_expiry_minutes',
+  'model_timeout_ms', 'odd_hour_start', 'odd_hour_end',
+]);
+const POSITIVE_KEYS = new Set([
+  'velocity_window_minutes', 'velocity_burst_count', 'avg_lookback_days', 'amount_spike_multiplier', 'impossible_travel_kmph',
+  'travel_lookback_hours', 'earth_radius_km', 'new_merchant_lookback_days', 'multiple_red_flags_count',
+  'step_up_expiry_minutes', 'model_timeout_ms',
+]);
+
+// Returns an error message, or null when the value is acceptable. `all` = the whole current config.
+function configProblem(key, value, current, all) {
+  if (kind(value) !== kind(current)) return `must be ${article(kind(current))} ${kind(current)}`;
+  const next = { ...all, [key]: value };
+
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value < 0) return 'must be a non-negative number';
+    if (INTEGER_KEYS.has(key) && !Number.isInteger(value)) return 'must be a whole number';
+    if (POSITIVE_KEYS.has(key) && value === 0) return 'must be greater than 0';
+    if ((key === 'ai_step_up_threshold' || key === 'ai_block_threshold') && value > 1) return 'must be between 0 and 1';
+    if ((key === 'odd_hour_start' || key === 'odd_hour_end') && value > 23) return 'must be an hour from 0 to 23';
+    if (next.ai_step_up_threshold > next.ai_block_threshold) return 'ai_step_up_threshold must not be above ai_block_threshold';
+    if (next.velocity_stepup_min > next.velocity_stepup_max) return 'velocity_stepup_min must not be above velocity_stepup_max';
+    if (next.velocity_stepup_max >= next.velocity_burst_count) return 'velocity_stepup_max must be below velocity_burst_count';
+  }
+
+  if (key === 'high_risk_mcc') {
+    if (!value.every((m) => typeof m === 'string' && /^[0-9]{4}$/.test(m))) return 'every MCC must be a 4-digit string, e.g. "4829"';
+    if (new Set(value).size !== value.length) return 'MCC codes must not repeat';
+  }
+
+  if (key === 'points' || key === 'sla_minutes') {
+    const want = Object.keys(current).sort().join(',');
+    if (Object.keys(value).sort().join(',') !== want) return `must have exactly these keys: ${want}`;
+    for (const [k, v] of Object.entries(value)) {
+      if (!Number.isInteger(v) || v < 0 || (key === 'sla_minutes' && v === 0)) {
+        return `${k} must be a whole number${key === 'sla_minutes' ? ' greater than 0' : ' (0 or more)'}`;
+      }
+    }
+  }
+  return null;
+}
 
 config.put('/:key', ah(async (req, res) => {
   const { key } = req.params;
@@ -100,8 +145,9 @@ config.put('/:key', ah(async (req, res) => {
   const current = await prisma.ruleConfig.findUnique({ where: { key } });
   if (!current) throw notFound(`Unknown config key ${key}`);
   if (key === 'version') throw invalid('Invalid input', { key: 'version is read-only' });
-  if (kind(value) !== kind(current.value)) throw invalid('Invalid input', { value: `must be a ${kind(current.value)}` });
-  if (typeof value === 'number' && (!Number.isFinite(value) || value < 0)) throw invalid('Invalid input', { value: 'must be a non-negative number' });
+  const all = Object.fromEntries((await prisma.ruleConfig.findMany()).map((r) => [r.key, r.value]));
+  const problem = configProblem(key, value, current.value, all);
+  if (problem) throw invalid('Invalid input', { value: problem });
 
   await prisma.$transaction(async (tx) => {
     await tx.ruleConfig.update({ where: { key }, data: { value } });
