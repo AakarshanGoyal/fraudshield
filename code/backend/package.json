@@ -3,6 +3,8 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
+    "start": "node src/server.js",
+    "smoke": "node scripts/smoke.js",
     "seed": "node scripts/seed.js",
     "reset": "node scripts/seed.js",
     "batch": "node scripts/batch.js",
