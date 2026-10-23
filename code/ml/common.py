@@ -63,3 +63,13 @@ def align_categories(X, categories):
     for c in CATEGORICAL:
         X[c] = pd.Categorical(X[c].astype(str), categories=categories[c])
     return X[FEATURES]
+
+
+def prepare_iso(df, categories):
+    """Numeric matrix for the Isolation Forest (AI-4). IF cannot take pandas
+    categoricals or NaN, so categoricals become integer codes (unseen/NaN -> -1)
+    aligned to the training categories, and numeric NaN is filled with 0."""
+    X = align_categories(prepare(df), categories).copy()
+    for c in CATEGORICAL:
+        X[c] = X[c].cat.codes          # -1 for unseen / missing
+    return X[FEATURES].astype(float).fillna(0.0)

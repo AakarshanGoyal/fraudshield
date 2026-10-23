@@ -97,6 +97,42 @@ gate = "PASS" if m_model["pr_auc"] >= 2 * m_base["pr_auc"] else "FAIL"
 ratio_x = m_model["pr_auc"] / m_base["pr_auc"]
 recall_pct = 100 * tp / (tp + fn) if (tp + fn) else 0.0
 
+# --- AI-4: Isolation Forest second detector (if trained) ---
+ai4_section = ""
+try:
+    import joblib
+    from common import prepare_iso
+    iso = joblib.load(f"{MODEL_DIR}/iso_model.pkl")
+    im = json.load(open(f"{MODEL_DIR}/iso_meta.json"))
+    raw = -iso.score_samples(prepare_iso(test, json.load(open(f"{MODEL_DIR}/features.json"))["categories"]))
+    iso_s = np.clip((raw - im["norm_lo"]) / (im["norm_hi"] - im["norm_lo"] + 1e-9), 0, 1)
+    iso_pr = average_precision_score(y, iso_s)
+    iso_roc = roc_auc_score(y, iso_s)
+    ai4_section = f"""
+## AI-4 - Second detector (Isolation Forest vs XGBoost vs baseline)
+
+Isolation Forest is unsupervised (labels used only for evaluation here), trained on
+the same out-of-time split. Its anomaly score is normalised to [0,1] for the alert
+screen. XGBoost remains the decision model; the Isolation Forest is a cross-check.
+
+| Detector | ROC-AUC | PR-AUC (primary) |
+|---|---:|---:|
+| Baseline (rules) | {m_base['roc_auc']:.4f} | {m_base['pr_auc']:.4f} |
+| **XGBoost (chosen)** | **{m_model['roc_auc']:.4f}** | **{m_model['pr_auc']:.4f}** |
+| Isolation Forest | {iso_roc:.4f} | {iso_pr:.4f} |
+
+AI-4 target (Isolation Forest ROC-AUC above the baseline ROC-AUC):
+**{'PASS' if iso_roc > m_base['roc_auc'] else 'FAIL'}** ({iso_roc:.4f} vs {m_base['roc_auc']:.4f}).
+
+Why XGBoost is the decision model: the Isolation Forest ranks anomalies reasonably
+(ROC-AUC {iso_roc:.3f}) but its **PR-AUC is {iso_pr:.4f}** - below even the rules
+baseline and far below XGBoost's {m_model['pr_auc']:.4f}. For rare fraud, PR-AUC is the
+metric that matters, so the supervised model is the right choice; the Isolation Forest
+is shown alongside as an independent second opinion.
+"""
+except Exception as e:
+    ai4_section = f"\n## AI-4 - Second detector\n\n_Not available: {e}_\n"
+
 # ---------------- evaluation_report.md ----------------
 ev = f"""# FraudShield - Evaluation Report (AI-1)
 
@@ -130,7 +166,7 @@ score 100 if `velocity_10m >= 5` or `merchant_risk == BLACKLISTED`, otherwise th
 sum of R7-R12 points (capped at 100). R10 uses the config `high_risk_mcc` list
 {cfg['high_risk_mcc']}. Note: `BLACKLISTED` does not occur in the labelled file, so
 the hard-100 branch fires only on the velocity condition here.
-
+{ai4_section}
 ## Model
 
 XGBoost, {meta['best_iteration']} trees, `scale_pos_weight` {meta['scale_pos_weight']:.1f}
