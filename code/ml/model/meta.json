@@ -1,0 +1,10 @@
+{
+  "model_version": "xgb-v1",
+  "seed": 42,
+  "best_iteration": 170,
+  "test_pr_auc": 0.6471087993525678,
+  "test_roc_auc": 0.9209500953549703,
+  "baseline_pr_auc": 0.13290779935035388,
+  "baseline_roc_auc": 0.7155165776936839,
+  "scale_pos_weight": 82.33666666666667
+}

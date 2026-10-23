@@ -1,0 +1,73 @@
+{
+  "features": [
+    "amount",
+    "local_hour",
+    "is_international",
+    "country_risk_high",
+    "distance_from_home_km",
+    "velocity_10m",
+    "velocity_24h",
+    "amount_to_avg30_ratio",
+    "new_merchant_flag",
+    "card_age_days",
+    "card_type",
+    "channel",
+    "mcc",
+    "mcc_category",
+    "merchant_risk"
+  ],
+  "categories": {
+    "card_type": [
+      "CREDIT",
+      "DEBIT"
+    ],
+    "channel": [
+      "ATM",
+      "CONTACTLESS",
+      "ECOM",
+      "POS"
+    ],
+    "mcc": [
+      "4111",
+      "4722",
+      "4814",
+      "4829",
+      "5311",
+      "5411",
+      "5541",
+      "5732",
+      "5812",
+      "5912",
+      "5944",
+      "5967",
+      "5999",
+      "6011",
+      "6051",
+      "7011",
+      "7995"
+    ],
+    "mcc_category": [
+      "CASH",
+      "DINING",
+      "DIRECT_MARKETING",
+      "ELECTRONICS",
+      "FUEL",
+      "GAMBLING",
+      "GROCERY",
+      "HOTEL",
+      "JEWELLERY",
+      "MONEY_TRANSFER",
+      "PHARMACY",
+      "QUASI_CASH",
+      "RETAIL",
+      "TELECOM",
+      "TRANSPORT",
+      "TRAVEL"
+    ],
+    "merchant_risk": [
+      "HIGH",
+      "LOW",
+      "MEDIUM"
+    ]
+  }
+}

@@ -17,5 +17,19 @@ services:
     ports:
       - "6379:6379"
 
+  # Dev's ML service (API Contract Section 8). Backend reaches it at
+  # ML_URL=http://ml:8000 on the compose network.
+  ml:
+    build: ./code/ml
+    container_name: fraudshield-ml
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
 volumes:
   pgdata:
