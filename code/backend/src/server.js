@@ -67,4 +67,4 @@ if (require.main === module) {
   start().catch(async (e) => { console.error(e); await prisma.$disconnect(); process.exit(1); });
 }
 
-module.exports = { app };
+module.exports = { app, start };

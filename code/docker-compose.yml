@@ -1,0 +1,66 @@
+# Full FraudShield stack. Run from the code folder:
+#   docker compose up --build
+# Then open http://localhost:5173 (app) and http://localhost:4000/api/docs (API docs).
+#
+# This stack has its own database (internal only, seeded automatically on first start),
+# so it never touches the dev database from the root docker-compose.yml.
+# Stop `npm run dev` first: the backend here also uses port 4000.
+
+name: fraudshield
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: fraud
+      POSTGRES_PASSWORD: fraud
+      POSTGRES_DB: fraudshield
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fraud -d fraudshield"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  ml:
+    build: ./ml
+    ports:
+      - "8000:8000"
+
+  backend:
+    build: ./backend
+    depends_on:
+      db:
+        condition: service_healthy
+      ml:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql://fraud:fraud@db:5432/fraudshield?schema=public
+      GATEWAY_API_KEY: ${GATEWAY_API_KEY:-gw-secret-123}
+      JWT_SECRET: ${JWT_SECRET:-jwt-secret-123}
+      ML_URL: http://ml:8000
+      DATA_DIR: /data
+    volumes:
+      - ../data:/data:ro
+      - ../output:/output
+    ports:
+      - "4000:4000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: http://localhost:4000
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"
+
+volumes:
+  dbdata:
