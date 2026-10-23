@@ -1,6 +1,8 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const swaggerUi = require('swagger-ui-express');
+const { spec } = require('./openapi');
 const { prisma } = require('./db');
 const { ah, errorHandler, notFound } = require('./errors');
 const { requireApiKey, requireAuth, requireRole } = require('./middleware/auth');
@@ -18,6 +20,10 @@ app.use(cors());
 app.use(express.json({ limit: '100kb' }));
 
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
+
+// API docs: interactive Swagger UI + raw spec
+app.get('/api/openapi.json', (req, res) => res.json(spec));
+app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(spec, { customSiteTitle: 'FraudShield API' }));
 
 // Gateway (API key only)
 app.post('/api/v1/authorisations', requireApiKey, ah(async (req, res) => {
@@ -51,7 +57,10 @@ async function start() {
   const tick = () => expireDue().then((n) => n && console.log(`[JOB] expired ${n} step-up(s)`)).catch((e) => console.error('[JOB]', e));
   tick();
   setInterval(tick, 30 * 1000);
-  app.listen(PORT, () => console.log(`FraudShield backend on http://localhost:${PORT} (ML: ${process.env.ML_URL || 'stub'})`));
+  app.listen(PORT, () => {
+    console.log(`FraudShield backend on http://localhost:${PORT} (ML: ${process.env.ML_URL || 'stub'})`);
+    console.log(`API docs: http://localhost:${PORT}/api/docs`);
+  });
 }
 
 if (require.main === module) {

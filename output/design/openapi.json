@@ -1,0 +1,2307 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "FraudShield API",
+    "version": "1.0.0",
+    "description": "Real-time card transaction fraud detection for Kaveri National Bank (HCL BFSI hackathon, use case 01).\n\n**Decision path:** validate → idempotency on `txn_id` → lock the card row → features → rules R1–R13 (thresholds from the config table) → ML fraud score (can only make a decision stricter; 150 ms timeout, falls back to rules) → save + audit → response.\n\n**Auth:** the gateway uses `x-api-key`; people log in with `POST /api/auth/login` and send `Authorization: Bearer <token>`.\nDemo users (password `demo123`): `analyst1`, `analyst2`, `manager1`, `manager2`, and every `username` in customers.csv (cardholders).\n\nAll times are ISO-8601 with the IST offset (+05:30). Money is INR with 2 decimals. Full card numbers never appear anywhere."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:4000"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Gateway",
+      "description": "Card network side (API key only)"
+    },
+    {
+      "name": "Auth"
+    },
+    {
+      "name": "Cardholder",
+      "description": "Role CARDHOLDER, own data only"
+    },
+    {
+      "name": "Alerts",
+      "description": "Analyst queue and manager approvals"
+    },
+    {
+      "name": "Manager",
+      "description": "Dashboard, audit trail, rule configuration (role MANAGER)"
+    },
+    {
+      "name": "Demo"
+    },
+    {
+      "name": "System"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "apiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-api-key",
+        "description": "GATEWAY_API_KEY from .env"
+      },
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "VALIDATION_ERROR",
+                  "UNAUTHORIZED",
+                  "FORBIDDEN",
+                  "NOT_FOUND",
+                  "CONFLICT",
+                  "INTERNAL_ERROR"
+                ]
+              },
+              "message": {
+                "type": "string"
+              },
+              "fields": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "field name → problem"
+              }
+            }
+          }
+        },
+        "example": {
+          "error": {
+            "code": "VALIDATION_ERROR",
+            "message": "Invalid input",
+            "fields": {
+              "amount": "must be > 0"
+            }
+          }
+        }
+      },
+      "ReasonCode": {
+        "type": "string",
+        "enum": [
+          "CARD_NOT_ACTIVE",
+          "INTL_NOT_ENABLED",
+          "MERCHANT_BLACKLISTED",
+          "DAILY_LIMIT_EXCEEDED",
+          "VELOCITY_BURST",
+          "IMPOSSIBLE_TRAVEL",
+          "HIGH_VELOCITY",
+          "AMOUNT_SPIKE",
+          "HIGH_RISK_GEO",
+          "HIGH_RISK_MCC",
+          "ODD_HOUR_HIGH_VALUE",
+          "NEW_MERCHANT_HIGH_VALUE",
+          "MULTIPLE_RED_FLAGS",
+          "HIGH_FRAUD_SCORE_MODEL",
+          "STEP_UP_DENIED",
+          "STEP_UP_TIMEOUT"
+        ]
+      },
+      "Decision": {
+        "type": "string",
+        "enum": [
+          "APPROVE",
+          "STEP_UP",
+          "BLOCK"
+        ]
+      },
+      "TxnStatus": {
+        "type": "string",
+        "enum": [
+          "RECEIVED",
+          "STEP_UP_PENDING",
+          "APPROVED",
+          "BLOCKED"
+        ]
+      },
+      "AlertStatus": {
+        "type": "string",
+        "enum": [
+          "OPEN",
+          "IN_REVIEW",
+          "PENDING_MANAGER_APPROVAL",
+          "CONFIRMED_FRAUD",
+          "FALSE_POSITIVE"
+        ]
+      },
+      "Priority": {
+        "type": "string",
+        "enum": [
+          "HIGH",
+          "MEDIUM"
+        ]
+      },
+      "TransactionRequest": {
+        "type": "object",
+        "required": [
+          "txn_id",
+          "card_id",
+          "txn_ts",
+          "amount",
+          "merchant_id",
+          "mcc",
+          "channel",
+          "txn_city",
+          "txn_country"
+        ],
+        "properties": {
+          "txn_id": {
+            "type": "string",
+            "pattern": "^T[0-9]{9}$"
+          },
+          "card_id": {
+            "type": "string",
+            "description": "Must exist"
+          },
+          "txn_ts": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO-8601 with offset, e.g. 2026-03-04T14:05:00+05:30"
+          },
+          "amount": {
+            "type": "number",
+            "exclusiveMinimum": true,
+            "minimum": 0,
+            "maximum": 1000000,
+            "multipleOf": 0.01
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "INR"
+            ],
+            "default": "INR"
+          },
+          "merchant_id": {
+            "type": "string",
+            "description": "Must exist"
+          },
+          "mcc": {
+            "type": "string",
+            "pattern": "^[0-9]{4}$"
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "POS",
+              "ECOM",
+              "ATM",
+              "CONTACTLESS"
+            ]
+          },
+          "txn_city": {
+            "type": "string",
+            "description": "Must exist in cities"
+          },
+          "txn_country": {
+            "type": "string",
+            "description": "Must be the city's country"
+          }
+        },
+        "example": {
+          "txn_id": "T200000007",
+          "card_id": "C1007",
+          "txn_ts": "2026-03-04T14:05:00+05:30",
+          "amount": 15000,
+          "currency": "INR",
+          "merchant_id": "M00451",
+          "mcc": "5732",
+          "channel": "ECOM",
+          "txn_city": "Mumbai",
+          "txn_country": "IN"
+        }
+      },
+      "DecisionResponse": {
+        "type": "object",
+        "properties": {
+          "txn_id": {
+            "type": "string"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/Decision",
+            "description": "Rules only"
+          },
+          "final_decision": {
+            "$ref": "#/components/schemas/Decision",
+            "description": "After the ML score (never softer than `decision`)"
+          },
+          "reason_codes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReasonCode"
+            },
+            "description": "Rule order; MULTIPLE_RED_FLAGS last"
+          },
+          "rule_risk_score": {
+            "type": "integer",
+            "nullable": true,
+            "description": "Empty on hard stops (R1/R2); 100 when R3–R6 fire"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TxnStatus"
+          },
+          "alert_id": {
+            "type": "integer",
+            "nullable": true
+          },
+          "processed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "fraud_score": {
+            "type": "number",
+            "nullable": true,
+            "minimum": 0,
+            "maximum": 1
+          },
+          "top_factors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Top 3 reasons in plain English"
+          },
+          "model_status": {
+            "type": "string",
+            "enum": [
+              "OK",
+              "MODEL_UNAVAILABLE"
+            ]
+          }
+        },
+        "example": {
+          "txn_id": "T200000007",
+          "decision": "STEP_UP",
+          "final_decision": "STEP_UP",
+          "reason_codes": [
+            "AMOUNT_SPIKE"
+          ],
+          "rule_risk_score": 30,
+          "status": "STEP_UP_PENDING",
+          "alert_id": null,
+          "processed_at": "2026-10-23T14:05:00+05:30",
+          "fraud_score": 0.412,
+          "top_factors": [
+            "amount 6.3x the card's 30-day average",
+            "online payment",
+            "electronics merchant"
+          ],
+          "model_status": "OK"
+        }
+      },
+      "User": {
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "CARDHOLDER",
+              "ANALYST",
+              "MANAGER"
+            ]
+          },
+          "customer_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "display_name": {
+            "type": "string"
+          }
+        },
+        "example": {
+          "user_id": "U_A1",
+          "username": "analyst1",
+          "role": "ANALYST",
+          "customer_id": null,
+          "display_name": "Analyst One"
+        }
+      },
+      "Card": {
+        "type": "object",
+        "properties": {
+          "card_id": {
+            "type": "string"
+          },
+          "masked_number": {
+            "type": "string",
+            "example": "XXXXXXXXXXXX4821"
+          },
+          "card_type": {
+            "type": "string",
+            "enum": [
+              "DEBIT",
+              "CREDIT"
+            ]
+          },
+          "card_status": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "BLOCKED",
+              "EXPIRED"
+            ]
+          },
+          "expiry_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "daily_limit": {
+            "type": "number"
+          },
+          "international_enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "CardholderTransaction": {
+        "type": "object",
+        "properties": {
+          "txn_id": {
+            "type": "string"
+          },
+          "card_id": {
+            "type": "string"
+          },
+          "txn_ts": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "amount": {
+            "type": "number"
+          },
+          "merchant_name": {
+            "type": "string"
+          },
+          "channel": {
+            "type": "string"
+          },
+          "txn_city": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TxnStatus"
+          },
+          "message": {
+            "type": "string",
+            "description": "Neutral text; rules and scores are never shown to cardholders"
+          }
+        }
+      },
+      "PendingStepUp": {
+        "type": "object",
+        "properties": {
+          "txn_id": {
+            "type": "string"
+          },
+          "card_id": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "number"
+          },
+          "merchant_name": {
+            "type": "string"
+          },
+          "txn_ts": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "AlertListItem": {
+        "type": "object",
+        "properties": {
+          "alert_id": {
+            "type": "integer"
+          },
+          "txn_id": {
+            "type": "string"
+          },
+          "priority": {
+            "$ref": "#/components/schemas/Priority"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AlertStatus"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "sla_due_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "sla_breached": {
+            "type": "boolean",
+            "description": "Not closed and past sla_due_at"
+          },
+          "amount": {
+            "type": "number"
+          },
+          "card_id": {
+            "type": "string"
+          },
+          "card_last4": {
+            "type": "string"
+          },
+          "merchant_name": {
+            "type": "string"
+          },
+          "reason_codes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReasonCode"
+            }
+          },
+          "fraud_score": {
+            "type": "number",
+            "nullable": true
+          },
+          "claimed_by": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "AlertDetail": {
+        "type": "object",
+        "properties": {
+          "alert": {
+            "type": "object",
+            "properties": {
+              "alert_id": {
+                "type": "integer"
+              },
+              "priority": {
+                "$ref": "#/components/schemas/Priority"
+              },
+              "status": {
+                "$ref": "#/components/schemas/AlertStatus"
+              },
+              "sla_due_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "sla_breached": {
+                "type": "boolean"
+              },
+              "claimed_by": {
+                "type": "string",
+                "nullable": true
+              },
+              "proposed_by": {
+                "type": "string",
+                "nullable": true
+              },
+              "comment": {
+                "type": "string",
+                "nullable": true
+              }
+            }
+          },
+          "transaction": {
+            "type": "object",
+            "properties": {
+              "txn_id": {
+                "type": "string"
+              },
+              "txn_ts": {
+                "type": "string"
+              },
+              "amount": {
+                "type": "number"
+              },
+              "channel": {
+                "type": "string"
+              },
+              "merchant_id": {
+                "type": "string"
+              },
+              "merchant_name": {
+                "type": "string"
+              },
+              "mcc": {
+                "type": "string"
+              },
+              "txn_city": {
+                "type": "string"
+              },
+              "txn_country": {
+                "type": "string"
+              },
+              "status": {
+                "$ref": "#/components/schemas/TxnStatus"
+              },
+              "decision": {
+                "$ref": "#/components/schemas/Decision"
+              },
+              "final_decision": {
+                "$ref": "#/components/schemas/Decision"
+              },
+              "reason_codes": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ReasonCode"
+                }
+              },
+              "rule_risk_score": {
+                "type": "integer",
+                "nullable": true
+              }
+            }
+          },
+          "features": {
+            "type": "object",
+            "description": "Values used at decision time",
+            "properties": {
+              "velocity_10m": {
+                "type": "integer",
+                "nullable": true
+              },
+              "approved_today": {
+                "type": "number",
+                "nullable": true
+              },
+              "avg_amount_30d": {
+                "type": "number",
+                "nullable": true
+              },
+              "speed_kmph": {
+                "type": "number",
+                "nullable": true
+              },
+              "new_merchant": {
+                "type": "boolean",
+                "nullable": true
+              }
+            }
+          },
+          "ai": {
+            "type": "object",
+            "properties": {
+              "fraud_score": {
+                "type": "number",
+                "nullable": true
+              },
+              "top_factors": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "model_status": {
+                "type": "string"
+              },
+              "model_version": {
+                "type": "string",
+                "nullable": true
+              }
+            }
+          },
+          "card": {
+            "type": "object",
+            "properties": {
+              "card_id": {
+                "type": "string"
+              },
+              "masked_number": {
+                "type": "string"
+              },
+              "card_type": {
+                "type": "string"
+              },
+              "card_status": {
+                "type": "string"
+              },
+              "home_city": {
+                "type": "string"
+              },
+              "daily_limit": {
+                "type": "number"
+              }
+            }
+          },
+          "recent_transactions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "txn_id": {
+                  "type": "string"
+                },
+                "txn_ts": {
+                  "type": "string"
+                },
+                "amount": {
+                  "type": "number"
+                },
+                "txn_city": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "narrative": {
+            "type": "string",
+            "nullable": true,
+            "description": "Optional AI-generated summary"
+          }
+        }
+      },
+      "Comment": {
+        "type": "string",
+        "minLength": 10
+      },
+      "AuditRow": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "entity": {
+            "type": "string",
+            "enum": [
+              "TRANSACTION",
+              "ALERT",
+              "CARD",
+              "CONFIG"
+            ]
+          },
+          "entity_id": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "ts": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "action": {
+            "type": "string"
+          },
+          "from_status": {
+            "type": "string",
+            "nullable": true
+          },
+          "to_status": {
+            "type": "string",
+            "nullable": true
+          },
+          "comment": {
+            "type": "string",
+            "nullable": true
+          },
+          "before": {
+            "type": "object",
+            "nullable": true
+          },
+          "after": {
+            "type": "object",
+            "nullable": true
+          }
+        }
+      },
+      "Dashboard": {
+        "type": "object",
+        "properties": {
+          "transactions_by_decision": {
+            "type": "object",
+            "properties": {
+              "APPROVE": {
+                "type": "integer"
+              },
+              "STEP_UP": {
+                "type": "integer"
+              },
+              "BLOCK": {
+                "type": "integer"
+              }
+            }
+          },
+          "block_rate": {
+            "type": "number"
+          },
+          "step_up_rate": {
+            "type": "number"
+          },
+          "open_alerts_by_priority": {
+            "type": "object",
+            "properties": {
+              "HIGH": {
+                "type": "integer"
+              },
+              "MEDIUM": {
+                "type": "integer"
+              }
+            }
+          },
+          "sla_breaches": {
+            "type": "integer"
+          },
+          "false_positive_rate": {
+            "type": "number",
+            "description": "FALSE_POSITIVE ÷ closed alerts"
+          },
+          "top_reason_codes": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "$ref": "#/components/schemas/ReasonCode"
+                },
+                "count": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ConfigEntry": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "value": {},
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/api/v1/authorisations": {
+      "post": {
+        "tags": [
+          "Gateway"
+        ],
+        "summary": "Decide a card transaction",
+        "security": [
+          {
+            "apiKey": []
+          }
+        ],
+        "description": "Idempotent on `txn_id`: a repeat returns the original response and creates nothing. Transactions on the same card are serialised so velocity counts stay correct. STEP_UP writes a simulated OTP to the server log.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransactionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Decision",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Body is not valid JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token / API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed; `fields` lists each problem",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Log in",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "username",
+                  "password"
+                ],
+                "properties": {
+                  "username": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                }
+              },
+              "example": {
+                "username": "analyst1",
+                "password": "demo123"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "JWT + user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "token": {
+                      "type": "string"
+                    },
+                    "user": {
+                      "$ref": "#/components/schemas/User"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token / API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed; `fields` lists each problem",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/me": {
+      "get": {
+        "tags": [
+          "Auth"
+        ],
+        "summary": "Current user",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "User",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token / API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/me/cards": {
+      "get": {
+        "tags": [
+          "Cardholder"
+        ],
+        "summary": "My cards",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Cards",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Card"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token / API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong role, not your data, or same maker and checker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/me/transactions": {
+      "get": {
+        "tags": [
+          "Cardholder"
+        ],
+        "summary": "My transactions, newest first",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "card_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Optional; must be your card (else 403)"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "maximum": 200
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Transactions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CardholderTransaction"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token / API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong role, not your data, or same maker and checker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/me/stepups/pending": {
+      "get": {
+        "tags": [
+          "Cardholder"
+        ],
+        "summary": "\"Was this you?\" requests waiting for me",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pending step-ups",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PendingStepUp"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token / API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong role, not your data, or same maker and checker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/me/stepups/{txn_id}/respond": {
+      "post": {
+        "tags": [
+          "Cardholder"
+        ],
+        "summary": "Answer a step-up",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "description": "CONFIRM with the correct OTP within 15 minutes → APPROVED. NOT_ME → BLOCKED (STEP_UP_DENIED), card blocked, HIGH alert.",
+        "parameters": [
+          {
+            "name": "txn_id",
+            "in": "path",
+            "required": true,
+            "description": "Transaction id",
+            "schema": {
+              "type": "string"
+            },
+            "example": "T200000007"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "response"
+                ],
+                "properties": {
+                  "response": {
+                    "type": "string",
+                    "enum": [
+                      "CONFIRM",
+                      "NOT_ME"
+                    ]
+                  },
+                  "otp": {
+                    "type": "string",
+                    "pattern": "^[0-9]{6}$",
+                    "description": "Required for CONFIRM"
+                  }
+                }
+              },
+              "example": {
+                "response": "CONFIRM",
+                "otp": "482913"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "New status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "txn_id": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "$ref": "#/components/schemas/TxnStatus"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token / API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong role, not your data, or same maker and checker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Expired or already answered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Incorrect OTP or invalid response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/me/cards/{card_id}/block": {
+      "post": {
+        "tags": [
+          "Cardholder"
+        ],
+        "summary": "Block my card",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "card_id",
+            "in": "path",
+            "required": true,
+            "description": "Card id",
+            "schema": {
+              "type": "string"
+            },
+            "example": "C1007"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Blocked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "card_id": {
+                      "type": "string"
+                    },
+                    "card_status": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token / API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong role, not your data, or same maker and checker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/alerts": {
+      "get": {
+        "tags": [
+          "Alerts"
+        ],
+        "summary": "Alert queue (HIGH first, then earliest SLA)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "description": "Roles ANALYST and MANAGER.",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Comma-separated, e.g. OPEN,IN_REVIEW"
+          },
+          {
+            "name": "priority",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "HIGH, MEDIUM or both"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Alerts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AlertListItem"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token / API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong role, not your data, or same maker and checker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/alerts/{alert_id}": {
+      "get": {
+        "tags": [
+          "Alerts"
+        ],
+        "summary": "Alert detail with features, AI score and card history",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "alert_id",
+            "in": "path",
+            "required": true,
+            "description": "Alert id",
+            "schema": {
+              "type": "string"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Alert",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AlertDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token / API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong role, not your data, or same maker and checker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/alerts/{alert_id}/claim": {
+      "post": {
+        "tags": [
+          "Alerts"
+        ],
+        "summary": "Claim an OPEN alert (ANALYST)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "alert_id",
+            "in": "path",
+            "required": true,
+            "description": "Alert id",
+            "schema": {
+              "type": "string"
+            },
+            "example": "1"
+          }
+        ],
+        "description": "Locks it to one analyst. If two analysts claim at once, exactly one succeeds; the other gets 409.",
+        "responses": {
+          "200": {
+            "description": "Claimed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "alert_id": {
+                      "type": "integer"
+                    },
+                    "status": {
+                      "$ref": "#/components/schemas/AlertStatus"
+                    },
+                    "claimed_by": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token / API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong role, not your data, or same maker and checker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Already claimed / already changed by someone else",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/alerts/{alert_id}/close": {
+      "post": {
+        "tags": [
+          "Alerts"
+        ],
+        "summary": "Close a claimed alert (ANALYST)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "alert_id",
+            "in": "path",
+            "required": true,
+            "description": "Alert id",
+            "schema": {
+              "type": "string"
+            },
+            "example": "1"
+          }
+        ],
+        "description": "CONFIRMED_FRAUD blocks the card. FALSE_POSITIVE on an amount above ₹1,00,000 goes to PENDING_MANAGER_APPROVAL. Only the claiming analyst can close.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "outcome",
+                  "comment"
+                ],
+                "properties": {
+                  "outcome": {
+                    "type": "string",
+                    "enum": [
+                      "CONFIRMED_FRAUD",
+                      "FALSE_POSITIVE"
+                    ]
+                  },
+                  "comment": {
+                    "$ref": "#/components/schemas/Comment"
+                  }
+                }
+              },
+              "example": {
+                "outcome": "FALSE_POSITIVE",
+                "comment": "Customer confirmed by phone, genuine travel."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "New status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "alert_id": {
+                      "type": "integer"
+                    },
+                    "status": {
+                      "$ref": "#/components/schemas/AlertStatus"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token / API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong role, not your data, or same maker and checker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Already claimed / already changed by someone else",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed; `fields` lists each problem",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/alerts/{alert_id}/decision": {
+      "post": {
+        "tags": [
+          "Alerts"
+        ],
+        "summary": "Checker decision on a false-positive proposal (MANAGER)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "alert_id",
+            "in": "path",
+            "required": true,
+            "description": "Alert id",
+            "schema": {
+              "type": "string"
+            },
+            "example": "1"
+          }
+        ],
+        "description": "APPROVE → FALSE_POSITIVE; REJECT → CONFIRMED_FRAUD (card blocked). The proposer cannot decide (403).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "decision",
+                  "comment"
+                ],
+                "properties": {
+                  "decision": {
+                    "type": "string",
+                    "enum": [
+                      "APPROVE",
+                      "REJECT"
+                    ]
+                  },
+                  "comment": {
+                    "$ref": "#/components/schemas/Comment"
+                  }
+                }
+              },
+              "example": {
+                "decision": "APPROVE",
+                "comment": "Reviewed evidence, genuine payment."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "New status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "alert_id": {
+                      "type": "integer"
+                    },
+                    "status": {
+                      "$ref": "#/components/schemas/AlertStatus"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token / API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong role, not your data, or same maker and checker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Already claimed / already changed by someone else",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed; `fields` lists each problem",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dashboard": {
+      "get": {
+        "tags": [
+          "Manager"
+        ],
+        "summary": "Fraud dashboard",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "example": "2026-03-01"
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "example": "2026-03-05"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Figures",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Dashboard"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token / API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong role, not your data, or same maker and checker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed; `fields` lists each problem",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audit": {
+      "get": {
+        "tags": [
+          "Manager"
+        ],
+        "summary": "Audit trail of one entity, oldest first",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "description": "Append-only: the database rejects any UPDATE or DELETE on audit rows.",
+        "parameters": [
+          {
+            "name": "entity",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "TRANSACTION",
+                "ALERT",
+                "CARD",
+                "CONFIG"
+              ]
+            }
+          },
+          {
+            "name": "entity_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "example": "T200000007"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Rows",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AuditRow"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token / API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong role, not your data, or same maker and checker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed; `fields` lists each problem",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/audit/export": {
+      "get": {
+        "tags": [
+          "Manager"
+        ],
+        "summary": "Audit trail as CSV",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "entity",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "TRANSACTION",
+                "ALERT",
+                "CARD",
+                "CONFIG"
+              ]
+            }
+          },
+          {
+            "name": "entity_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "CSV file",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token / API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong role, not your data, or same maker and checker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed; `fields` lists each problem",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/config": {
+      "get": {
+        "tags": [
+          "Manager"
+        ],
+        "summary": "All rule configuration values",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Config",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ConfigEntry"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token / API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong role, not your data, or same maker and checker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/config/{key}": {
+      "put": {
+        "tags": [
+          "Manager"
+        ],
+        "summary": "Change one configuration value",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "description": "Takes effect on the next decision, no restart. Type and range are checked (e.g. MCCs must be 4-digit strings, AI thresholds 0–1). Audited with before/after values.",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "description": "Config key",
+            "schema": {
+              "type": "string"
+            },
+            "example": "velocity_burst_count"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "value"
+                ],
+                "properties": {
+                  "value": {}
+                }
+              },
+              "example": {
+                "value": 6
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "value": {}
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token / API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong role, not your data, or same maker and checker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed; `fields` lists each problem",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/simulate": {
+      "post": {
+        "tags": [
+          "Demo"
+        ],
+        "summary": "Simulate a transaction (ANALYST or MANAGER)",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "description": "Same engine and response as the gateway API. `txn_id` and `txn_ts` may be omitted (generated / now).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransactionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Decision",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid token / API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong role, not your data, or same maker and checker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed; `fields` lists each problem",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Liveness",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
