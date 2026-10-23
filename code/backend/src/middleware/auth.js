@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const { unauthorized, forbidden } = require('../errors');
 
-const JWT_SECRET = () => process.env.JWT_SECRET || 'jwt-secret-123';
+const JWT_SECRET = () => process.env.JWT_SECRET;
 
 // Gateway only: x-api-key must equal GATEWAY_API_KEY (constant-time compare)
 function requireApiKey(req, res, next) {

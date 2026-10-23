@@ -51,7 +51,31 @@ app.use(errorHandler);
 
 const PORT = Number(process.env.PORT) || 4000;
 
+// First call to the model is slow (SHAP compiles on first use). Make it now, not on a customer's payment.
+async function warmUpModel() {
+  if (!process.env.ML_URL) return;
+  const { score } = require('./services/ml');
+  const sample = { card_type: 'DEBIT', channel: 'POS', mcc: '5411', mcc_category: 'GROCERY', merchant_risk: 'LOW',
+    amount: 1000, local_hour: 12, is_international: 0, country_risk_high: 0, distance_from_home_km: 0,
+    velocity_10m: 0, velocity_24h: 1, amount_to_avg30_ratio: 1, new_merchant_flag: 0, card_age_days: 365 };
+  for (let i = 0; i < 3; i++) {
+    const t0 = Date.now();
+    const r = await score(sample, { model_timeout_ms: 10000 });
+    if (r.model_status === 'OK') return console.log(`ML warm-up OK (${Date.now() - t0} ms)`);
+    await new Promise((res) => setTimeout(res, 2000));
+  }
+  console.warn('ML warm-up failed: live decisions will use rules only until the ML service responds');
+}
+
 async function start() {
+  // Refuse to run with missing or publicly known secrets
+  const KNOWN = ['jwt-secret-123', 'gw-secret-123', 'change-me'];
+  for (const name of ['JWT_SECRET', 'GATEWAY_API_KEY']) {
+    const v = process.env[name];
+    if (!v || v.length < 16 || KNOWN.includes(v)) {
+      throw new Error(`${name} must be set in .env to a random value of at least 16 characters`);
+    }
+  }
   await installAuditGuard();
   // Step-up expiry job: every 30 seconds
   const tick = () => expireDue().then((n) => n && console.log(`[JOB] expired ${n} step-up(s)`)).catch((e) => console.error('[JOB]', e));
@@ -60,6 +84,7 @@ async function start() {
   app.listen(PORT, () => {
     console.log(`FraudShield backend on http://localhost:${PORT} (ML: ${process.env.ML_URL || 'stub'})`);
     console.log(`API docs: http://localhost:${PORT}/api/docs`);
+    warmUpModel();
   });
 }
 

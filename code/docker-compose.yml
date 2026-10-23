@@ -37,8 +37,8 @@ services:
         condition: service_started
     environment:
       DATABASE_URL: postgresql://fraud:fraud@db:5432/fraudshield?schema=public
-      GATEWAY_API_KEY: ${GATEWAY_API_KEY:-gw-secret-123}
-      JWT_SECRET: ${JWT_SECRET:-jwt-secret-123}
+      GATEWAY_API_KEY: ${GATEWAY_API_KEY:?set GATEWAY_API_KEY in code/.env}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in code/.env}
       ML_URL: http://ml:8000
       DATA_DIR: /data
     volumes:
