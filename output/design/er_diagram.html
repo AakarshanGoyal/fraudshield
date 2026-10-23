@@ -1,0 +1,148 @@
+<!doctype html><html><head><meta charset="utf-8"><title>FraudShield ER diagram</title>
+<style>body{margin:0;padding:24px;background:#fff;font-family:system-ui}</style></head><body>
+<pre class="mermaid">
+erDiagram
+    Customer ||--o{ Card : &quot;owns&quot;
+    Customer |o--o| User : &quot;logs in as&quot;
+    Card ||--o{ Transaction : &quot;used for&quot;
+    Transaction ||--o| StepUp : &quot;verified by&quot;
+    Transaction ||--o| Alert : &quot;raises&quot;
+
+    Merchant ||..o{ Transaction : &quot;merchant_id&quot;
+    MccCode ||..o{ Merchant : &quot;mcc&quot;
+    MccCode ||..o{ Transaction : &quot;mcc&quot;
+    City ||..o{ Transaction : &quot;txn_city&quot;
+    City ||..o{ Card : &quot;home_city&quot;
+    CountryRisk ||..o{ Transaction : &quot;txn_country&quot;
+    User ||..o{ Alert : &quot;claimed / proposed / closed by&quot;
+    AuditLog }o..o| Transaction : &quot;entity TRANSACTION&quot;
+    AuditLog }o..o| Alert : &quot;entity ALERT&quot;
+    AuditLog }o..o| Card : &quot;entity CARD&quot;
+    AuditLog }o..o| RuleConfig : &quot;entity CONFIG&quot;
+
+    Customer {
+        String customer_id PK
+        String full_name
+        String mobile
+        String email
+        String city
+        String username UK
+    }
+    User {
+        String user_id PK
+        String username UK
+        String password_hash &quot;bcrypt&quot;
+        String role &quot;CARDHOLDER | ANALYST | MANAGER&quot;
+        String customer_id FK,UK &quot;null for staff&quot;
+    }
+    Card {
+        String card_id PK
+        String customer_id FK
+        String card_hash &quot;salted hash, never the number&quot;
+        String last4
+        String card_type &quot;DEBIT | CREDIT&quot;
+        String card_status &quot;ACTIVE | BLOCKED | EXPIRED&quot;
+        Date issue_date
+        Date expiry_date
+        String home_city
+        String home_country
+        Decimal daily_limit &quot;12,2&quot;
+        Boolean international_enabled
+    }
+    Transaction {
+        String txn_id PK
+        String card_id FK
+        Timestamptz txn_ts &quot;index with card_id&quot;
+        Decimal amount &quot;12,2&quot;
+        String currency &quot;INR&quot;
+        String merchant_id
+        String mcc
+        String channel &quot;POS | ECOM | ATM | CONTACTLESS&quot;
+        String txn_city
+        String txn_country
+        String status &quot;RECEIVED | STEP_UP_PENDING | APPROVED | BLOCKED&quot;
+        String source &quot;LIVE | HISTORY&quot;
+        String decision &quot;rules only&quot;
+        String final_decision &quot;after AI&quot;
+        String_array reason_codes
+        Int rule_risk_score
+        Int velocity_10m
+        Decimal avg_amount_30d
+        Float speed_kmph
+        Float fraud_score
+        Json top_factors
+        String model_status &quot;OK | MODEL_UNAVAILABLE&quot;
+        String model_version
+        DateTime processed_at
+    }
+    StepUp {
+        Int id PK
+        String txn_id FK,UK
+        String otp_hash
+        DateTime expires_at
+        String status &quot;PENDING | CONFIRMED | DENIED | EXPIRED&quot;
+        DateTime responded_at
+    }
+    Alert {
+        Int alert_id PK
+        String txn_id FK,UK
+        String priority &quot;HIGH | MEDIUM&quot;
+        String status &quot;OPEN | IN_REVIEW | PENDING_MANAGER_APPROVAL | CONFIRMED_FRAUD | FALSE_POSITIVE&quot;
+        DateTime sla_due_at
+        DateTime created_at
+        String claimed_by &quot;username&quot;
+        String proposed_by &quot;maker&quot;
+        String closed_by &quot;checker or analyst&quot;
+        String comment
+        Int version &quot;optimistic lock&quot;
+    }
+    Merchant {
+        String merchant_id PK
+        String merchant_name &quot;untrusted text&quot;
+        String mcc
+        String mcc_description
+        String city
+        String country
+        String merchant_risk &quot;LOW | MEDIUM | HIGH | BLACKLISTED&quot;
+    }
+    MccCode {
+        String mcc PK
+        String mcc_description
+        String mcc_category
+        Boolean high_risk
+    }
+    City {
+        String city PK
+        String country
+        Float lat
+        Float lon
+        String city_tier &quot;METRO | NON_METRO | INTL&quot;
+    }
+    CountryRisk {
+        String country_code PK
+        String country_name
+        String risk_level &quot;LOW | HIGH&quot;
+    }
+    RuleConfig {
+        String key PK
+        Json value
+        DateTime updated_at
+    }
+    AuditLog {
+        BigInt id PK
+        String entity &quot;TRANSACTION | ALERT | CARD | CONFIG&quot;
+        String entity_id &quot;index with entity, ts&quot;
+        String actor
+        String role
+        DateTime ts
+        String action
+        String from_status
+        String to_status
+        String comment
+        Json before
+        Json after
+    }
+</pre>
+<script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs";
+mermaid.initialize({startOnLoad:true,theme:"default",er:{layoutDirection:"TB"}});
+window.__done=mermaid.run().then(()=>"ok").catch(e=>"ERR "+e.message);</script></body></html>
